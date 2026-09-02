@@ -35,6 +35,9 @@ embd_dim: 256
 
 sample_rate: 16000
 
+train_tar_index: null
+tar_max_open_shards: 32
+
 corpus_dir: /work/zl389/AudioData
 
 musan_path: !apply:os.path.join [!ref <corpus_dir>, 'musan'] 

@@ -8,13 +8,17 @@ import torch.distributed as dist
 from sklearn.metrics import accuracy_score
 from deeplab.core.trainer import Trainer
 from local.dataset import Train_Dataset, Valid_Dataset
+from local.tar_dataset import TarTrainDataset
 from local.sampler import WavBatchSampler
 from tqdm import tqdm
 
 class LocalTrainer(Trainer):
 
     def prep(self, hparams):
-        self.train_dataset = Train_Dataset(hparams)
+        if hparams.get('train_tar_index'):
+            self.train_dataset = TarTrainDataset(hparams)
+        else:
+            self.train_dataset = Train_Dataset(hparams)
         self.valid_dataset = Valid_Dataset(hparams)
 
         self.train_batch_sampler = WavBatchSampler(

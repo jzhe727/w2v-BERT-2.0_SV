@@ -27,6 +27,38 @@ conda install -c conda-forge sox
 
 ### Train Stage
 
+#### Indexed tar training data
+
+The training loader can read uncompressed WebDataset tar shards without extracting
+their members. Build the SQLite index once from `recipes/DeepASV`:
+
+```bash
+python local/tar_index.py \
+  --shard-glob '/scratch/46889734/voxceleb2-dev-wds/voxceleb2-dev-*.tar' \
+  --output /scratch/46889734/voxceleb2-dev-wds/voxceleb2.index.sqlite3
+```
+
+Set `train_tar_index` in the selected training YAML to the generated index path.
+`tar_max_open_shards` controls the per-worker file-descriptor cache. When
+`train_tar_index` is null or omitted, the original `train_data` loader is used.
+The indexed loader retains exact `RandomSampler`/`DistributedSampler` shuffling,
+speed-perturbed labels, cropping, and augmentation. It supports epoch-boundary
+resume through the existing sampler epoch handling, but does not save mid-epoch
+dataloader state.
+
+PyAV decodes M4A members directly from bytes. SoX remains required for speed
+perturbation:
+
+```bash
+conda install -c conda-forge sox
+```
+
+Run the CPU loader tests from `recipes/DeepASV`:
+
+```bash
+PYTHONPATH=../.. python -m unittest discover -s tests -v
+```
+
 **Stage1: Pre-trained model freeze training**
 
 ```
