@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import time
+from itertools import islice
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -38,8 +39,14 @@ def parse_args():
     parser.add_argument("--max-iters", type=int, default=50)
     parser.add_argument("--dur-range", type=float, nargs=2, default=[2.0, 3.0])
     parser.add_argument("--speed-perturbation", type=float, nargs="*", default=[0.9, 1.1])
+    parser.add_argument("--data-aug", action="store_true")
+    parser.add_argument("--musan-path")
+    parser.add_argument("--rirs-path")
     parser.add_argument("--result-json", default=None)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.data_aug and (not args.musan_path or not args.rirs_path):
+        parser.error("--data-aug requires --musan-path and --rirs-path")
+    return args
 
 
 def check(condition, message):
@@ -60,7 +67,9 @@ def main():
         "training_loop": 1,
         "sample_rate": 16000,
         "speed_perturbation": args.speed_perturbation or None,
-        "data_aug": False,  # local MUSAN is incomplete; augmentation is not under test
+        "data_aug": args.data_aug,
+        "musan_path": args.musan_path,
+        "rirs_path": args.rirs_path,
         "tar_max_open_shards": 32,
         "train_tar_index": args.tar_index,
     }
@@ -101,16 +110,18 @@ def main():
         f"Dataloader length differs across ranks: {[int(i.item()) for i in lengths]}",
     )
 
-    # Rank-disjointness: DistributedSampler must partition sample indices.
+    # A bounded prefix catches rank partitioning regressions without gathering
+    # millions of Python integers. DistributedSampler may duplicate one padded
+    # tail item when the dataset length is not divisible by world size.
     sampler.set_epoch(0)
-    local_indices = {idx for batch in sampler for idx, _ in batch}
+    local_indices = set(islice(iter(sampler.sampler), 4096))
     gathered_indices = [None] * world_size
     dist.all_gather_object(gathered_indices, local_indices)
     if rank == 0:
         union = set().union(*gathered_indices)
         total = sum(len(part) for part in gathered_indices)
-        check(len(union) == total, "Ranks received overlapping sample indices")
-        print(f"disjointness ok: {total} indices across {world_size} ranks", flush=True)
+        check(len(union) == total, "Rank sampler prefixes overlap")
+        print(f"prefix partitioning ok: {total} indices across {world_size} ranks", flush=True)
 
     stats = {"epochs": [], "world_size": world_size, "batch_size": args.batch_size}
     min_samples = int(args.dur_range[0] * hparams["sample_rate"])

@@ -8,6 +8,8 @@ scikit_learn
 scipy
 soundfile
 tqdm
-peft
+peft==0.20.0
+huggingface_hub>=0.34.0,<1.0
+tokenizers>=0.22.0,<=0.23.0
 wandb
 importlib_metadata

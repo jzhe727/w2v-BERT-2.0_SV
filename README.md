@@ -20,10 +20,16 @@ pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https
 
 pip install -r requirements.txt
 
-pip uninstall transformers
+pip uninstall -y transformers
+pip install --no-deps -e deeplab/pretrained/audio2vector/module/transformers
 
 conda install -c conda-forge sox
 ```
+
+The local setup uses the `w2vbert-sv-tar` environment and stores the pretrained
+model outside Git at
+`/home/john.zheng1/voicegeneration/models/facebook/w2v-bert-2.0`. The local
+W2V-BERT training YAML files are wired to that directory.
 
 ### Train Stage
 
@@ -43,8 +49,8 @@ Set `train_tar_index` in the selected training YAML to the generated index path.
 `train_tar_index` is null or omitted, the original `train_data` loader is used.
 The indexed loader retains exact `RandomSampler`/`DistributedSampler` shuffling,
 speed-perturbed labels, cropping, and augmentation. It supports epoch-boundary
-resume through the existing sampler epoch handling, but does not save mid-epoch
-dataloader state.
+stage transitions through model checkpoints, but full optimizer/scheduler resume
+and mid-epoch dataloader state are not implemented.
 
 PyAV decodes M4A members directly from bytes. SoX remains required for speed
 perturbation:
@@ -53,46 +59,67 @@ perturbation:
 conda install -c conda-forge sox
 ```
 
+MUSAN augmentation can also run from one packed, uncompressed tar. Decompress
+only the gzip layer, then set `musan_path` to the resulting `.tar`:
+
+```bash
+gzip -dk /path/to/musan.tar.gz
+```
+
+The first dataset initialization builds an atomic `musan.tar.sqlite3` sidecar.
+Workers then read WAV members by indexed offsets without extracting them. Music
+selection continues to use MUSAN's `ANNOTATIONS` files and excludes tracks
+marked as vocal. Compressed `.tar.gz` input is rejected because it cannot
+support direct positional reads.
+
+#### VoxCeleb1 validation
+
+Extract the VoxCeleb1 development and test archives under one `wav/` directory,
+then prepare each supplied protocol from `recipes/DeepASV`:
+
+```bash
+python local/prepare_voxceleb1.py \
+  --wav-root /scratch/47731887/voxceleb1/wav \
+  --trial-source /home/john.zheng1/voicegeneration/veri_test2.txt \
+  --output-dir /scratch/47731887/voxceleb1/protocols/vox1-o
+```
+
+Use `list_test_all2.txt` and `list_test_hard2.txt` similarly for Vox1-E and
+Vox1-H. Training validation uses Vox1-O; the other manifests are retained for
+final evaluation.
+
 Run the CPU loader tests from `recipes/DeepASV`:
 
 ```bash
 PYTHONPATH=../.. python -m unittest discover -s tests -v
 ```
 
-**Stage1: Pre-trained model freeze training**
+#### Local two-GPU A100/H100 training
 
-```
-OMP_NUM_THREADS="16" CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"  \
-torchrun --nnodes 1 --nproc_per_node=8 --master_port=12885 train.py \
---tag vox2_ \
---is_distributed true \
---yaml conf/w2v-bert/s1.yaml
-```
+The local configs retain the original per-GPU microbatches: 64 for Stages 1-2
+and 32 for Stage 3. Two GPUs give one quarter of the original eight-GPU global
+batch, so all learning-rate bounds are scaled by `sqrt(1/4) = 1/2`. Gradient
+accumulation is disabled, and checkpoints are written only at epoch boundaries.
 
-**Stage2: Joint fine-tuning**
+Submit Stage 1:
 
-```
-# Merging LoRA module parameters into the pre-trained model
-cd utils
-python3 lora_merge.py
-
-OMP_NUM_THREADS="16" CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"  \
-torchrun --nnodes 1 --nproc_per_node=8 --master_port=12885 train.py \
---tag vox2_ \
---is_distributed true \
---yaml conf/w2v-bert/s2.yaml \
---pretrain /path/stage1/lora_merge.pth
+```bash
+sbatch train_2xgpu.slurm
 ```
 
-**Stage3: large margin fine-tuning**
+Submit Stage 2 with the final Stage 1 epoch checkpoint. The job merges LoRA
+weights automatically before full fine-tuning:
 
+```bash
+sbatch --export=ALL,STAGE=s2,PRETRAIN=/path/to/stage1/ckpt_0015.pth \
+  train_2xgpu.slurm
 ```
-OMP_NUM_THREADS="16" CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"  \
-torchrun --nnodes 1 --nproc_per_node=8 --master_port=12885 train.py \
---tag vox2_ \
---is_distributed true \
---yaml conf/w2v-bert/s3.yaml \
---pretrain /path/stage2/best_ckpt.pth
+
+Submit Stage 3 with the final Stage 2 checkpoint:
+
+```bash
+sbatch --export=ALL,STAGE=s3,PRETRAIN=/path/to/stage2/ckpt_0019.pth \
+  train_2xgpu.slurm
 ```
 
 ![Diagram](assets/table1.png)

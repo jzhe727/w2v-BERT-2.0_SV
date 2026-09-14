@@ -1,65 +1,69 @@
-import os, sys
-sys.path.append('../')
-sys.path.append('../../../')
-sys.path.append('../../../deeplab/pretrained/audio2vector/module/transformers/src')
-sys.path.append(os.path.split(__file__)[0])
-from calflops import calculate_flops
+import argparse
+import os
+import sys
+from pathlib import Path
 
-from local.spk_model import Audio2Vec_based_Adapter
-from deeplab.pretrained.audio2vector.api import create_lora_config
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
 import torch
 
+from deeplab.pretrained.audio2vector.api import create_lora_config
+from local.spk_model import Audio2Vec_based_Adapter
 
-peft_config = create_lora_config(
-    model_type='w2v-bert',
-    r=64,
-    lora_alpha=128,
-    target_modules=["linear_q", "linear_v"],
-    lora_dropout=0.0,
-    bias='none')
 
-model = Audio2Vec_based_Adapter(
-    model_name='facebook/w2v-bert-2.0', 
-    frozen_encoder=True,
-    n_mfa_layers=-1,
-    pooling_layer='ASP', 
-    peft_config=peft_config,
-    encoder_config='config_prune_tea.json'
+def merge_lora(checkpoint_path, output_path, model_path):
+    checkpoint_path = Path(checkpoint_path).resolve()
+    output_path = Path(output_path).resolve()
+    model_path = str(Path(model_path).resolve())
+
+    peft_config = create_lora_config(
+        model_type="w2v-bert",
+        r=64,
+        lora_alpha=128,
+        target_modules=["linear_q", "linear_v"],
+        lora_dropout=0.0,
+        bias="none",
     )
-model.eval()
-
-ckpt_path = '/work/zl389/workspace/LLM_ASV/publish_code/recipes/DeepASV/results/checkpoints/vox2_251005144134/ckpt_0001.pth'
-ckpt = torch.load(ckpt_path, map_location=torch.device('cpu'))
-ckpt_data = ckpt['modules']['spk_model']
-
-cur_state_dict = model.state_dict()
-for k in cur_state_dict.keys():
-    if k in ckpt_data and cur_state_dict[k].shape == ckpt_data[k].shape:
-        cur_state_dict[k] = ckpt_data[k]
-    else:
-        print(f'{k}_is_mismatch')
-model.load_state_dict(cur_state_dict)
-
-
-input_shape = (1, 16000)
-calculate_flops(
-    model=model, 
-    input_shape=input_shape,
-    print_detailed=False,
-    print_results=True,
+    model = Audio2Vec_based_Adapter(
+        model_name=model_path,
+        frozen_encoder=True,
+        n_mfa_layers=-1,
+        pooling_layer="ASP",
+        peft_config=peft_config,
+        encoder_config="config_prune_tea.json",
+        embd_dim=256,
+        adapter_dim=128,
+        dropout=0.0,
     )
 
-model.front.encoder = model.front.encoder.merge_and_unload()
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    model.load_state_dict(checkpoint["modules"]["spk_model"], strict=True)
+    model.front.encoder = model.front.encoder.merge_and_unload()
+    checkpoint["modules"]["spk_model"] = model.state_dict()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
+    try:
+        torch.save(checkpoint, temporary_path)
+        os.replace(temporary_path, output_path)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
-input_shape = (1, 16000)
-calculate_flops(
-    model=model, 
-    input_shape=input_shape,
-    print_detailed=False,
-    print_results=True,
+def main():
+    parser = argparse.ArgumentParser(description="Merge Stage 1 LoRA weights for full fine-tuning")
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--model-path",
+        default="/home/john.zheng1/voicegeneration/models/facebook/w2v-bert-2.0",
     )
+    args = parser.parse_args()
+    merge_lora(args.checkpoint, args.output, args.model_path)
+    print(f"Merged LoRA checkpoint: {args.output}", flush=True)
 
-update_state_dict = model.state_dict()
-ckpt['modules']['spk_model'] = update_state_dict
-torch.save(ckpt, os.path.join(os.path.dirname(ckpt_path), 'merge_lora.pth'))
+
+if __name__ == "__main__":
+    main()

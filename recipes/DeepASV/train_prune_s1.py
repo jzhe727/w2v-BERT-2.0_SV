@@ -158,6 +158,7 @@ if __name__ == '__main__':
     parser.add_argument("--is_distributed", default=False, type=bool)
     parser.add_argument("--yaml", type=str, default='')
     parser.add_argument("--pretrain", type=str, default='')
+    parser.add_argument("--resume", type=str, default='')
     parser.add_argument("--tag", type=str, default='')
     args = parser.parse_args()
     
@@ -169,7 +170,9 @@ if __name__ == '__main__':
             exps_tag=args.tag,
         )
 
-        if args.pretrain:
+        if args.resume:
+            trainer.resume_checkpoints(args.resume)
+        elif args.pretrain:
             trainer.load_checkpoints(args.pretrain)
             
         trainer.fit()

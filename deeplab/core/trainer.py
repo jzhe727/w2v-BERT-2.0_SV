@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import numpy as np
 import wandb
 import torch
@@ -37,6 +38,10 @@ class Trainer():
         self.is_distributed = is_distributed
         self.init_logs_list = []
         self.init_epoch_idx = 0
+        self.init_optimizer_state = None
+        self.init_scheduler_states = {}
+        self.init_amp_scaler_state = None
+        self.init_rng_state = None
         self.exps_tag = exps_tag
 
         if self.is_distributed:
@@ -73,6 +78,10 @@ class Trainer():
             self.use_wandb = False
 
         self.iters_to_accumulate = self.hparams['gradient_accumulation']
+        if self.iters_to_accumulate != 1:
+            raise ValueError(
+                'gradient_accumulation must be 1; use per-GPU batch size and learning rate scaling instead'
+            )
         self.print('INFO: Using gradient accumulation: {}'.format(self.iters_to_accumulate))
 
         self.max_iters_per_epoch = self.hparams['max_iters_per_epoch'] 
@@ -102,18 +111,22 @@ class Trainer():
                 shuffle=bool(self.train_sampler is None),
                 sampler=self.train_sampler,
                 num_workers=self.hparams['num_workers'],
+                prefetch_factor=4 if self.hparams['num_workers'] > 0 else None,
                 collate_fn=self.collate_fn if hasattr(self, 'collate_fn') else None,
                 worker_init_fn=seed_worker,
                 pin_memory=True,
+                persistent_workers=self.hparams['num_workers'] > 0,
                 )
         elif hasattr(self, 'train_batch_sampler'):
             self.train_dataloader = DataLoader(
                 dataset=self.train_dataset, 
                 batch_sampler=self.train_batch_sampler,
                 num_workers=self.hparams['num_workers'],
+                prefetch_factor=4 if self.hparams['num_workers'] > 0 else None,
                 collate_fn=self.collate_fn if hasattr(self, 'collate_fn') else None,
                 worker_init_fn=seed_worker,
                 pin_memory=True,
+                persistent_workers=self.hparams['num_workers'] > 0,
                 )
 
         if hasattr(self, 'valid_sampler'):
@@ -197,6 +210,7 @@ class Trainer():
         
     def fit(self):
         self.initialize_training()
+        self.restore_training_state()
 
         if not self.is_distributed or dist.get_rank()==0:
             timestamp = time.strftime('%y%m%d%H%M%S', time.localtime(time.time())) 
@@ -228,7 +242,7 @@ class Trainer():
 
         logs_list = self.init_logs_list
         epoch_idx = self.init_epoch_idx
-        for epoch_idx in range(self.init_epoch_idx+1, self.init_epoch_idx+self.hparams['num_epochs']+1):
+        for epoch_idx in range(self.init_epoch_idx+1, self.hparams['num_epochs']+1):
             logs = self.train_one_epoch(epoch_idx, ckpts_dir, logs_list)
             logs_list.append(logs)
             ckpt_path = os.path.join(ckpts_dir,'ckpt_{}.pth'.format(str(epoch_idx).zfill(4)))
@@ -241,6 +255,14 @@ class Trainer():
                         ckpt_data['modules'][k] = v.module.state_dict()
                     else:
                         ckpt_data['modules'][k] = v.state_dict()
+                ckpt_data['optimizer'] = self.optimizer.state_dict()
+                if self.scheduler is not None:
+                    ckpt_data['scheduler'] = self.get_scheduler_state(self.scheduler)
+                if self.scheduler_lmft is not None:
+                    ckpt_data['scheduler_lmft'] = self.get_scheduler_state(self.scheduler_lmft)
+                if self.hparams['use_amp']:
+                    ckpt_data['amp_scaler'] = self.amp_scaler.state_dict()
+                ckpt_data['rng'] = self.get_rng_state()
                 torch.save(ckpt_data, ckpt_path)
 
             if self.is_distributed: 
@@ -376,6 +398,7 @@ class Trainer():
             if self.is_distributed: 
                 dist.barrier() 
 
+        training_modes = [module.training for module in self.modules.values()]
         valid_logs = dict()
         for module in self.modules.values():
             module.eval()
@@ -394,11 +417,14 @@ class Trainer():
                 loss = sum(loss_dict.values()) 
                 valid_logs = self.update_logs(valid_logs, loss_dict)
                 valid_logs = self.update_logs(valid_logs, self.eval_fn(inputs, predictions))
+
+        for module, training in zip(self.modules.values(), training_modes):
+            module.train(training)
         
         return valid_logs
 
 
-    def load_checkpoints(self, ckpt_path):
+    def load_checkpoints(self, ckpt_path, include_training_state=False):
         ckpt_data = torch.load(ckpt_path, map_location=self.device)
         self.print('INFO: Loaded checkpoints from: {}'.format(ckpt_path))
         # load modules 
@@ -440,8 +466,87 @@ class Trainer():
 
         self.init_epoch_idx = ckpt_data['epoch_idx']
         self.init_logs_list = read_json(os.path.join(os.path.dirname(ckpt_path), 'logs.json'))[:self.init_epoch_idx]
+
+        if include_training_state:
+            if 'optimizer' in ckpt_data:
+                self.init_optimizer_state = ckpt_data['optimizer']
+            else:
+                self.print('WARN: No optimizer state in checkpoint ({}); optimizer will restart fresh'.format(ckpt_path))
+            self.init_scheduler_states = {k: ckpt_data[k] for k in ('scheduler', 'scheduler_lmft') if k in ckpt_data}
+            self.init_amp_scaler_state = ckpt_data.get('amp_scaler', None)
+            self.init_rng_state = ckpt_data.get('rng', None)
+            if self.init_rng_state is not None:
+                self.init_rng_state = dict(self.init_rng_state)
+                self.init_rng_state['torch'] = self.init_rng_state['torch'].cpu()
+                if 'torch_cuda' in self.init_rng_state:
+                    self.init_rng_state['torch_cuda'] = [s.cpu() for s in self.init_rng_state['torch_cuda']]
+
         if self.is_distributed:
             dist.barrier()
+
+    def resume_checkpoints(self, ckpt_path):
+        self.load_checkpoints(ckpt_path, include_training_state=True)
+        self.print('INFO: Resuming optimizer, scheduler and RNG states from: {}'.format(ckpt_path))
+
+    def get_rng_state(self):
+        # RNG states are stored as tensors/primitives only, so the checkpoint
+        # stays loadable under torch.load(weights_only=True) (PyTorch >= 2.6 default)
+        np_keys, np_pos, np_has_gauss, np_gauss = np.random.get_state()[1:]
+        rng = dict(
+            python=random.getstate(),
+            numpy=dict(
+                keys=torch.from_numpy(np_keys.astype(np.int64)),
+                pos=np_pos,
+                has_gauss=np_has_gauss,
+                gauss=np_gauss,
+                ),
+            torch=torch.get_rng_state(),
+            )
+        if torch.cuda.is_available():
+            rng['torch_cuda'] = torch.cuda.get_rng_state_all()
+
+        return rng
+
+    def set_rng_state(self, rng):
+        if rng is None:
+            return
+        random.setstate(rng['python'])
+        np_keys = rng['numpy']['keys'].cpu().numpy().astype(np.uint32)
+        np.random.set_state(('MT19937', np_keys, int(rng['numpy']['pos']),
+                            int(rng['numpy']['has_gauss']), rng['numpy']['gauss']))
+        torch.set_rng_state(rng['torch'].cpu())
+        if 'torch_cuda' in rng and torch.cuda.is_available():
+            torch.cuda.set_rng_state_all([s.cpu() for s in rng['torch_cuda']])
+
+    def get_scheduler_state(self, scheduler):
+        if hasattr(scheduler, 'state_dict'):
+            return scheduler.state_dict()
+        # custom schedulers (e.g. WarmupCosineScheduler) keep state in __dict__;
+        # exclude the optimizer reference, which is not picklable
+        return {k: v for k, v in scheduler.__dict__.items() if k != 'optimizer'}
+
+    def load_scheduler_state(self, scheduler, state):
+        if hasattr(scheduler, 'load_state_dict'):
+            scheduler.load_state_dict(state)
+        else:
+            for k, v in state.items():
+                if hasattr(scheduler, k):
+                    setattr(scheduler, k, v)
+
+    def restore_training_state(self):
+        if self.init_optimizer_state is not None:
+            self.optimizer.load_state_dict(self.init_optimizer_state)
+            self.init_optimizer_state = None
+        for key, scheduler in (('scheduler', self.scheduler), ('scheduler_lmft', self.scheduler_lmft)):
+            if scheduler is not None and key in self.init_scheduler_states:
+                self.load_scheduler_state(scheduler, self.init_scheduler_states[key])
+        self.init_scheduler_states = {}
+        if self.init_amp_scaler_state is not None and self.hparams['use_amp']:
+            self.amp_scaler.load_state_dict(self.init_amp_scaler_state)
+            self.init_amp_scaler_state = None
+        if self.init_rng_state is not None:
+            self.set_rng_state(self.init_rng_state)
+            self.init_rng_state = None
 
 
     def is_trainable_module(self, module):

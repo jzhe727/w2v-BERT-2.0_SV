@@ -16,6 +16,17 @@ from local.tar_dataset import TarTrainDataset
 from local.sampler import WavBatchSampler
 
 
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    normalized = value.lower()
+    if normalized in {'1', 'true', 'yes', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'off'}:
+        return False
+    raise argparse.ArgumentTypeError(f'Invalid boolean value: {value}')
+
+
 class LocalTrainer(Trainer):
 
     def prep(self, hparams):
@@ -93,6 +104,7 @@ class LocalTrainer(Trainer):
         
 
     def validate_once(self, epoch_idx):
+        training_modes = [module.training for module in self.modules.values()]
         valid_logs = dict()
         for module in self.modules.values():
             module.eval()
@@ -126,15 +138,19 @@ class LocalTrainer(Trainer):
             save_trial(trial_path, self.valid_dataset.trial_list)
             eer = get_eer(utt2embd, trial_path)[0]
             valid_logs = self.update_logs(valid_logs, dict(lr=self.optimizer.param_groups[0]['lr'],eer=eer))
+
+        for module, training in zip(self.modules.values(), training_modes):
+            module.train(training)
                 
         return valid_logs
 
    
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--is_distributed", default=False, type=bool)
+    parser.add_argument("--is_distributed", default=False, type=parse_bool)
     parser.add_argument("--yaml", type=str, default='')
     parser.add_argument("--pretrain", type=str, default='')
+    parser.add_argument("--resume", type=str, default='')
     parser.add_argument("--tag", type=str, default='')
     args = parser.parse_args()
     
@@ -146,16 +162,19 @@ if __name__ == '__main__':
             exps_tag=args.tag,
         )
 
-        if args.pretrain:
+        if args.resume:
+            trainer.resume_checkpoints(args.resume)
+        elif args.pretrain:
             trainer.load_checkpoints(args.pretrain)
             
         trainer.fit()
         
     except Exception:
         print(traceback.format_exc())
+        raise
 
     finally:
-        if args.is_distributed:
+        if args.is_distributed and dist.is_initialized():
             dist.destroy_process_group()
 
 

@@ -24,6 +24,7 @@ def set_random_seed(seed):
 
 def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
+    torch.set_num_threads(1)
     set_random_seed(worker_seed)
 
 

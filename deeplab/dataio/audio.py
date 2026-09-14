@@ -26,7 +26,7 @@ def norm_audio(signal, mode='std'):
     Returns:
         归一化后的音频信号，float类型
     """
-    signal = signal.astype('float')
+    signal = signal.astype(np.float32)
 
     if mode == 'std':
         std = np.std(signal)
@@ -321,7 +321,11 @@ def add_noise_from_musan_dict(signal, sr, path_dict, prob, snr=[5,20]):
         noise_types = random.choice([['noise'], ['music'], ['babb','music'], ['babb']*random.randint(3,8)])
         
         for noise_type in noise_types:
-            noise = load_audio(random.sample(path_dict[noise_type],k=1)[0], sr)[0]
+            noise = load_audio(
+                random.sample(path_dict[noise_type], k=1)[0],
+                sr,
+                duration=signal.shape[0] / sr,
+            )[0]
             noise_signal += truncate_audio_random(noise, signal.shape[0])
         if len(signal.shape) == 2:
             noise_signal = np.tile(np.expand_dims(noise_signal,axis=1), (1,signal.shape[1])) 

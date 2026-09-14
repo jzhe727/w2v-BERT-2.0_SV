@@ -20,7 +20,23 @@ except ImportError:
     from tar_index import SCHEMA_VERSION, pread_exact
 
 
-def decode_m4a_bytes(data, sample_rate):
+# Extra samples decoded past the end of a seek window, in output samples:
+# covers AAC sync-frame backoff at the seek point and resampler priming.
+_WINDOW_MARGIN_SAMPLES = 4000
+
+
+def decode_m4a_bytes(data, sample_rate, window_samples=None):
+    """Decode an m4a payload to float32 mono at ``sample_rate``.
+
+    With ``window_samples``, decode a random window of that length (plus a
+    small margin) instead of the whole payload. Payloads without duration
+    metadata, shorter than the window, or whose seeked decode falls short
+    of the window fall back to a full decode.
+    """
+    if window_samples is not None and window_samples > 0:
+        signal = _decode_m4a_window(data, sample_rate, window_samples)
+        if signal is not None:
+            return signal
     chunks = []
     with av.open(io.BytesIO(data), mode="r") as container:
         if not container.streams.audio:
@@ -37,6 +53,54 @@ def decode_m4a_bytes(data, sample_rate):
     if not np.isfinite(signal).all():
         raise ValueError("M4A payload decoded to non-finite samples")
     return signal
+
+
+def _decode_m4a_window(data, sample_rate, window_samples):
+    """Decode one random ``window_samples`` window; None means fall back."""
+    try:
+        with av.open(io.BytesIO(data), mode="r") as container:
+            if not container.streams.audio:
+                return None
+            stream = container.streams.audio[0]
+            native_rate = stream.codec_context.sample_rate
+            if not native_rate or not stream.duration:
+                return None
+            total_native = int(stream.duration * stream.time_base * native_rate)
+            needed_native = int(
+                (window_samples + _WINDOW_MARGIN_SAMPLES) * native_rate / sample_rate
+            )
+            if total_native <= needed_native:
+                return None
+            start = np.random.randint(0, total_native - needed_native)
+            start_pts = (
+                start * stream.time_base.denominator
+            ) // (native_rate * stream.time_base.numerator)
+            try:
+                container.seek(start_pts, stream=stream, backward=True, any_frame=False)
+            except av.error.FFmpegError:
+                return None
+            resampler = av.AudioResampler(format="fltp", layout="mono", rate=sample_rate)
+            chunks = []
+            count = 0
+            for frame in container.decode(stream):
+                for resampled in resampler.resample(frame):
+                    chunk = resampled.to_ndarray()[0]
+                    chunks.append(chunk)
+                    count += chunk.shape[0]
+                if count >= window_samples + _WINDOW_MARGIN_SAMPLES:
+                    break
+            for resampled in resampler.resample(None):
+                chunk = resampled.to_ndarray()[0]
+                chunks.append(chunk)
+                count += chunk.shape[0]
+            if count < window_samples:
+                return None
+            signal = np.concatenate(chunks).astype(np.float32, copy=False)
+            if not np.isfinite(signal).all():
+                raise ValueError("M4A payload decoded to non-finite samples")
+            return signal
+    except av.error.FFmpegError:
+        return None
 
 
 def load_tar_index(index_path):
@@ -130,16 +194,18 @@ class TarTrainDataset(torch.utils.data.Dataset):
             os.close(oldest)
         return descriptor
 
-    def _read_audio(self, shard_id, offset, size):
+    def _read_audio(self, shard_id, offset, size, window_samples):
         data = pread_exact(self._descriptor(shard_id), size, offset)
-        return decode_m4a_bytes(data, self.sr)
+        return decode_m4a_bytes(data, self.sr, window_samples=window_samples)
 
     def __getitem__(self, idx_data):
         idx, dur = idx_data
         idx %= len(self.utt_list)
         variant, record_idx = divmod(idx, len(self.records))
         shard_id, offset, size, speaker_label = self.records[record_idx]
-        signal = self._read_audio(int(shard_id), int(offset), int(size))
+        signal = self._read_audio(
+            int(shard_id), int(offset), int(size), int(dur * self.sr)
+        )
         signal = truncate_audio_random(signal, int(dur * self.sr))
 
         if variant:

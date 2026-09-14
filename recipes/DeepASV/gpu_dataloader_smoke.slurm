@@ -8,8 +8,9 @@
 #SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:2
 #SBATCH --mem=64GB
-#SBATCH --time=2:00:00
-#SBATCH --partition=gpu-v100,gpu-l40
+#SBATCH --time=1:00:00
+#SBATCH --partition=gpu-a100,gpu-h100
+#SBATCH --exclude=egh2,mgh5
 
 set -euo pipefail
 
@@ -28,8 +29,11 @@ OMP_NUM_THREADS="16" torchrun --nnodes 1 --nproc_per_node=2 --master_port=12885 
     --tar-index "${INDEX_PATH}" \
     --batch-size 64 \
     --num-workers 16 \
-    --epochs 2 \
-    --max-iters 50 \
+    --epochs 1 \
+    --max-iters 10 \
+    --data-aug \
+    --musan-path /home/john.zheng1/voicegeneration/musan.tar \
+    --rirs-path /home/john.zheng1/voicegeneration/RIRS_NOISES \
     --result-json /home/john.zheng1/voicegeneration/vox2_gpu_loader_smoke_${SLURM_JOB_ID}.json
 
 echo "Finished GPU dataloader smoke test on $(date)"
