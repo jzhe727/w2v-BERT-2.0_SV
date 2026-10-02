@@ -2,3 +2,4 @@
 *.wandb
 *.log
 *.syncstate
+recipes/DeepASV/wandb/**

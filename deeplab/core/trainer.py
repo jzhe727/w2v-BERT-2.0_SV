@@ -464,10 +464,10 @@ class Trainer():
                 else:
                     self.print('      {}: <All weights matched>'.format(key)) 
 
-        self.init_epoch_idx = ckpt_data['epoch_idx']
-        self.init_logs_list = read_json(os.path.join(os.path.dirname(ckpt_path), 'logs.json'))[:self.init_epoch_idx]
-
         if include_training_state:
+            # Only resume restores progress; pretraining starts a new stage.
+            self.init_epoch_idx = ckpt_data['epoch_idx']
+            self.init_logs_list = read_json(os.path.join(os.path.dirname(ckpt_path), 'logs.json'))[:self.init_epoch_idx]
             if 'optimizer' in ckpt_data:
                 self.init_optimizer_state = ckpt_data['optimizer']
             else:

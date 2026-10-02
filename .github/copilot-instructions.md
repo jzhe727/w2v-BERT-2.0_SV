@@ -33,13 +33,19 @@
   System metrics need `nvidia-ml-py` installed; `WANDB_API_KEY` is exported from
   `~/.bashrc`. `running_loss` logging is currently coupled to `watch: true`.
 
-## Data paths (fixed, asserted by the slurm script)
+## Data paths (staging is ephemeral — check before submitting!)
 
-- VoxCeleb2 webdataset index: `/scratch/48054831/voxceleb2-dev-wds/voxceleb2.index.sqlite3`
-- VoxCeleb1 trials: `/scratch/48054834/voxceleb1/protocols/vox1-o/`
+- VoxCeleb scratch staging lives under `/scratch/{SLURM_JOB_ID}` and is **purged ~5 days
+  after the staging job ends**. Current staging job IDs are asserted at the top of
+  `train_2xgpu.slurm` — re-stage and repoint those paths whenever they expire:
+  vox2 webdataset index at `/scratch/{vox2_job}/voxceleb2-dev-wds/voxceleb2.index.sqlite3`,
+  vox1 protocols at `/scratch/{vox1_job}/protocols/vox1-o/{wav.scp,trials}`.
 - Model: `~/voicegeneration/models/facebook/w2v-bert-2.0/model.safetensors`
 - Noise: `~/voicegeneration/musan.tar`, `~/voicegeneration/RIRS_NOISES/`
 - Slurm logs: `~/voicegeneration/w2vbert_sv_train/`
+- `train_2xgpu.slurm` deliberately has NO `set -euo pipefail` (conda/env nonzero exits
+  killed jobs silently); every precondition is guarded with explicit `|| die` messages.
+  Env vars reach the script via `sbatch --export=ALL,STAGE=s2,PRETRAIN=...` (verified).
 
 ## Validation practice
 

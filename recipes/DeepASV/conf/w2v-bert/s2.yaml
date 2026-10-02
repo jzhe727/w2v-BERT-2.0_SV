@@ -41,7 +41,7 @@ embd_dim: 256
 
 sample_rate: 16000
 
-train_tar_index: /scratch/48054831/voxceleb2-dev-wds/voxceleb2.index.sqlite3
+train_tar_index: /scratch/49242338/voxceleb2-dev-wds/voxceleb2.index.sqlite3
 tar_max_open_shards: 32
 
 musan_path: /home/john.zheng1/voicegeneration/musan.tar
@@ -50,7 +50,7 @@ rirs_path: /home/john.zheng1/voicegeneration/RIRS_NOISES
 train_data: []
 
 
-valid_data: [{scp_path: '/scratch/48054834/voxceleb1/protocols/vox1-o/wav.scp', trial_path: '/scratch/48054834/voxceleb1/protocols/vox1-o/trials'}]
+valid_data: [{scp_path: '/scratch/49242339/voxceleb1/protocols/vox1-o/wav.scp', trial_path: '/scratch/49242339/voxceleb1/protocols/vox1-o/trials'}]
 
 
 peft_config: null
