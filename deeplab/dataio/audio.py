@@ -442,27 +442,35 @@ def tempo_augmentation(signal, sr, tempo=[0.9, 1.1]):
     return signal_sox
 
 
-def speed_augmentation(signal, sr, speed_value):
+def speed_augmentation(signal, sr, speed_value, tlen=None):
     """
     对音频信号进行速度增强处理
-    
+
     Args:
         signal: 输入音频信号，一维numpy数组
         sr: 采样率
-        speed_value: 速度增益值                                                                                                                                         
-        
+        speed_value: 速度增益值
+        tlen: 输出长度，默认保持原始长度。输入需长于 tlen*speed_value，否则会拼接自身
+
     Returns:
-        经过速度增强处理后的音频信号，保持原始长度
+        经过速度增强处理后的音频信号，长度为 tlen
     """
+    if tlen is None:
+        tlen = len(signal)
     factor = np.max(np.abs(signal))
     if factor == 0:
-        return signal
+        return truncate_audio_random(signal, tlen)
 
     signal = torch.from_numpy(signal).float() / factor
     effects = [['speed',str(speed_value)], ['rate',str(sr)]]
-    
+
     signal_sox = torchaudio.sox_effects.apply_effects_tensor(signal.unsqueeze(0), sr, effects, channels_first=True)[0] * factor
-    signal_sox = truncate_audio_random(signal_sox.flatten().numpy(), len(signal))
+    signal_sox = signal_sox.flatten().numpy()
+    # drop the resampler's filter ringing (~80 samples) at both ends when there is room
+    edge = 100
+    if len(signal_sox) > tlen + 2 * edge:
+        signal_sox = signal_sox[edge:-edge]
+    signal_sox = truncate_audio_random(signal_sox, tlen)
 
     return signal_sox
 

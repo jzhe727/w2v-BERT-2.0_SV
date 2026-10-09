@@ -94,6 +94,36 @@ class CheckpointLoadingTest(unittest.TestCase):
             self.assertEqual(trainer.scheduler.last_epoch, 2)
             self.assertEqual(len(json.loads(Path(trainer.ckpts_dir, "logs.json").read_text())), 4)
 
+    def test_strict_pretrain_module_rejects_partial_weights(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = self.make_trainer(directory)
+            trainer.hparams["strict_pretrain_modules"] = ["spk_model"]
+            weights = dict(trainer.modules["spk_model"].state_dict())
+            weights.pop("bias")
+            checkpoint = Path(directory, "partial.pth")
+            torch.save({"modules": {"spk_model": weights}}, checkpoint)
+            with self.assertRaisesRegex(RuntimeError, "1/2 weights missing or mismatched"):
+                trainer.load_checkpoints(checkpoint)
+            # without the strict setting the old partial load still works
+            trainer.hparams["strict_pretrain_modules"] = []
+            trainer.load_checkpoints(checkpoint)
+
+    def test_failed_checkpoint_write_leaves_no_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            trainer = self.make_trainer(directory)
+            ckpt_path = Path(directory, "ckpt_0001.pth")
+
+            def partial_save(obj, path):
+                Path(path).write_bytes(b"truncated")
+                raise OSError("Disk quota exceeded")
+
+            with mock.patch("torch.save", side_effect=partial_save):
+                with self.assertRaises(OSError):
+                    trainer.save_checkpoint({"modules": {}}, str(ckpt_path))
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            trainer.save_checkpoint({"modules": {}}, str(ckpt_path))
+            self.assertEqual(list(Path(directory).iterdir()), [ckpt_path])
+
 
 if __name__ == "__main__":
     unittest.main()

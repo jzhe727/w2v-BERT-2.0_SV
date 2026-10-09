@@ -46,9 +46,15 @@ class ArcFace(nn.Module):
     def __len__(self):
         return self.weight.shape[0]
 
-    def forward(self, input, label):               
+    def forward(self, input, label):
+        # Run in fp32: under bf16 autocast any cosine above ~0.998 rounds to 1.0,
+        # and the backward of sqrt(1 - cos^2) at 0 is inf, which gives NaN gradients.
+        with torch.autocast(device_type=input.device.type, enabled=False):
+            return self._forward(input.float(), label)
+
+    def _forward(self, input, label):
         # --------------------------- cos(theta) & phi(theta) ---------------------------
-        cosine = F.linear(F.normalize(input), F.normalize(self.weight)).clamp(-1, 1)
+        cosine = F.linear(F.normalize(input), F.normalize(self.weight.float())).clamp(-1 + 1e-7, 1 - 1e-7)
         sine = torch.sqrt(1.0 - torch.pow(cosine, 2))
         phi = cosine * self.cos_m - sine * self.sin_m
         if self.easy_margin:

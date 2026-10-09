@@ -327,16 +327,64 @@ class TarTrainDatasetTest(unittest.TestCase):
             )
             clean = dataset[(0, 0.02)]
             with mock.patch(
-                "local.tar_dataset.speed_augmentation", side_effect=lambda signal, *_: signal
+                "local.tar_dataset.speed_augmentation",
+                side_effect=lambda signal, sr, speed, tlen: signal[:tlen],
             ) as augment:
                 shifted = dataset[(len(dataset.records), 0.02)]
 
             self.assertEqual(len(dataset), 9)
             self.assertEqual(clean["aud_inputs"].shape, torch.Size([320]))
+            self.assertEqual(shifted["aud_inputs"].shape, torch.Size([320]))
             self.assertEqual(clean["spk_labels"].item(), 0)
             self.assertEqual(shifted["spk_labels"].item(), 3)
             augment.assert_called_once()
+            # speed 0.9 crops ceil(320 * 0.9) + margin input samples before sox
+            self.assertEqual(len(augment.call_args.args[0]), 288 + 400)
+            self.assertEqual(augment.call_args.kwargs["tlen"], 320)
             dataset.close()
+
+    def test_speed_perturbation_does_not_tile_clip(self):
+        # A ramp stays monotonic unless the clip is concatenated with itself.
+        sr = 16000
+        ramp = np.linspace(-0.5, 0.5, 200000).astype(np.float32)
+        dataset = TarTrainDataset.__new__(TarTrainDataset)
+        dataset.sr = sr
+        dataset.records = np.array([[0, 0, 0, 0]])
+        dataset.utt_list = range(3)
+        dataset.speed_values = [0.9, 1.1]
+        dataset.spk_num = 1
+        dataset.data_aug = False
+        dataset.feature_extractor = None
+        dataset._read_audio = lambda *_: ramp
+        for dur in (2.0, 2.5, 3.0):
+            for variant in (1, 2):
+                for _ in range(5):
+                    signal = dataset[(variant, dur)]["aud_inputs"].numpy()
+                    self.assertEqual(len(signal), int(dur * sr))
+                    self.assertGreaterEqual(np.diff(signal).min(), -1e-4)
+
+    def test_features_in_loader_match_model_side_extraction(self):
+        model_path = "/home/john.zheng1/voicegeneration/models/facebook/w2v-bert-2.0"
+        if not Path(model_path, "preprocessor_config.json").is_file():
+            self.skipTest("w2v-bert-2.0 feature extractor not available")
+        from transformers import AutoFeatureExtractor
+
+        extractor = AutoFeatureExtractor.from_pretrained(model_path, local_files_only=True)
+        with tempfile.TemporaryDirectory() as directory:
+            dataset, index_path = self._indexed_dataset(directory)
+            featurized = TarTrainDataset(_hparams(index_path), feature_extractor=extractor)
+            np.random.seed(0)
+            waveform = dataset[(1, 0.04)]["aud_inputs"]
+            np.random.seed(0)
+            features = featurized[(1, 0.04)]["aud_inputs"]
+            expected = extractor(
+                waveform[None].numpy(), sampling_rate=16000, return_tensors="pt",
+                padding=False, truncation=False, return_attention_mask=False,
+            ).input_features[0]
+            self.assertEqual(features.shape[-1], 160)
+            torch.testing.assert_close(features, expected, rtol=0, atol=0)
+            dataset.close()
+            featurized.close()
 
     def test_multiple_dataloader_workers(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -25,6 +25,25 @@ class ArcFaceTest(unittest.TestCase):
         self.assertTrue(torch.isfinite(logits).all())
         self.assertTrue(torch.isfinite(embeddings.grad).all())
 
+    def test_bf16_autocast_saturated_cosine_has_finite_gradients(self):
+        # Under bf16 a cosine of ~0.999 rounds to 1.0; sqrt(1 - cos^2)'s backward is then inf.
+        classifier = ArcFace(in_features=4, out_features=3, s=32, m=0.5)
+        with torch.no_grad():
+            classifier.weight.copy_(torch.eye(3, 4))
+        embeddings = torch.tensor(
+            [[1.0, 0.03, 0.0, 0.0], [0.02, 1.0, 0.0, 0.0]],
+            requires_grad=True,
+        )
+        labels = torch.tensor([0, 1])
+
+        with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+            logits = classifier(embeddings, labels)
+        torch.nn.functional.cross_entropy(logits, labels).backward()
+
+        self.assertEqual(logits.dtype, torch.float32)
+        self.assertTrue(torch.isfinite(embeddings.grad).all())
+        self.assertTrue(torch.isfinite(classifier.weight.grad).all())
+
 
 class PrepareVoxCeleb1Test(unittest.TestCase):
     def test_prepare_protocol_writes_only_referenced_audio(self):

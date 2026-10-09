@@ -81,22 +81,25 @@ def forward_w2v_bert(self, aud_inputs):
     Returns:
         BaseModelOutput: 包含last_hidden_state和hidden_states的输出
     """
-    # 使用特征提取器处理音频
-    features = self.feature_extractor(
-        aud_inputs.cpu().numpy(),
-        sampling_rate=16000,
-        return_tensors="pt",
-        padding=False,
-        truncation=False,
-        return_attention_mask=False,
-        )
-    
     # 获取模型参数所在的设备和数据类型
     device, dtype = _get_model_device_dtype(self.encoder)
-    
-    # 将特征转移到正确的设备和数据类型
-    input_features = features.input_features.to(device).to(dtype)
-    
+
+    if aud_inputs.dim() == 3:
+        # (B, T', 160) fbank features already computed by the DataLoader workers
+        input_features = aud_inputs.to(device).to(dtype)
+    else:
+        # 使用特征提取器处理音频
+        features = self.feature_extractor(
+            aud_inputs.cpu().numpy(),
+            sampling_rate=16000,
+            return_tensors="pt",
+            padding=False,
+            truncation=False,
+            return_attention_mask=False,
+            )
+        # 将特征转移到正确的设备和数据类型
+        input_features = features.input_features.to(device).to(dtype)
+
     # 特征投影
     x = self.encoder.feature_projection(input_features)[0]
     

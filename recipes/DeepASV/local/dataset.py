@@ -1,4 +1,4 @@
-import os, sys 
+import os, sys, math
 sys.path.append(os.path.split(__file__)[0])
 import torch
 import numpy as np
@@ -55,10 +55,13 @@ class Train_Dataset(torch.utils.data.Dataset):
         
         utt_data = self.utt_list[idx]
         signal = load_audio(utt_data['wav_path'], self.sr)[0]
-        signal = truncate_audio_random(signal, int(dur*self.sr))
-
-        if utt_data['speed_shift'] is not None:    
-            signal = speed_augmentation(signal, self.sr, utt_data['speed_shift'])
+        tlen = int(dur*self.sr)
+        if utt_data['speed_shift'] is not None:
+            # crop enough input that the sped-up/slowed output still covers tlen
+            signal = truncate_audio_random(signal, int(math.ceil(tlen*utt_data['speed_shift'])) + 400)
+            signal = speed_augmentation(signal, self.sr, utt_data['speed_shift'], tlen=tlen)
+        else:
+            signal = truncate_audio_random(signal, tlen)
             
         if self.data_aug:
             aug_type = np.random.choice(['none', 'noise', 'reverb'])

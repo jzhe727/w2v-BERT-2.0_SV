@@ -26,6 +26,11 @@ conda activate w2vbert-sv-tar || die "conda env w2vbert-sv-tar activation failed
 echo "[startup] node=$(hostname) stage=${STAGE:-s1} job=${SLURM_JOB_ID} $(date)"
 
 STAGE=${STAGE:-s1}
+# A resumed job (RESUME=<.../ckpt_000N.pth>) restores everything from that
+# checkpoint, so PRETRAIN (and the s2 LoRA merge) is skipped.
+if [[ -n "${RESUME:-}" ]]; then
+    PRETRAIN_ARGS=()
+else
 case "${STAGE}" in
     s1)
         if [[ -n "${PRETRAIN:-}" ]]; then
@@ -57,14 +62,16 @@ case "${STAGE}" in
         exit 2
         ;;
 esac
+fi
 
 CONFIG="conf/w2v-bert/${STAGE}.yaml"
+test -f "${CONFIG}" || die "config not found: ${CONFIG}"
 echo "[startup] config=${CONFIG} pretrain=${PRETRAIN:-none} resume=${RESUME:-none}"
-test -f /scratch/49242338/voxceleb2-dev-wds/voxceleb2.index.sqlite3 \
-    || die "missing vox2 index /scratch/49242338/voxceleb2-dev-wds/voxceleb2.index.sqlite3 — scratch staging may have been purged"
-test -f /scratch/49242339/voxceleb1/protocols/vox1-o/wav.scp \
+test -f /scratch/49572342/voxceleb2-dev-wds/voxceleb2.index.sqlite3 \
+    || die "missing vox2 index /scratch/49572342/voxceleb2-dev-wds/voxceleb2.index.sqlite3 — scratch staging may have been purged"
+test -f /scratch/49572343/voxceleb1/protocols/vox1-o/wav.scp \
     || die "missing vox1 wav.scp — scratch staging may have been purged"
-test -f /scratch/49242339/voxceleb1/protocols/vox1-o/trials \
+test -f /scratch/49572343/voxceleb1/protocols/vox1-o/trials \
     || die "missing vox1 trials — scratch staging may have been purged"
 test -f /home/john.zheng1/voicegeneration/models/facebook/w2v-bert-2.0/model.safetensors \
     || die "missing w2v-bert model.safetensors"

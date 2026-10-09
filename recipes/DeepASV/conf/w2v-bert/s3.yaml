@@ -38,10 +38,14 @@ max_valid_dur: 60
 speed_perturbation: []
 data_aug: false
 embd_dim: 256
+# compute fbank features in the DataLoader workers (identical output, frees the main process)
+features_in_loader: true
+# fail instead of silently partial-loading --pretrain/--resume (encoder config skips safetensors)
+strict_pretrain_modules: [spk_model]
 
 sample_rate: 16000
 
-train_tar_index: /scratch/49242338/voxceleb2-dev-wds/voxceleb2.index.sqlite3
+train_tar_index: /scratch/49572342/voxceleb2-dev-wds/voxceleb2.index.sqlite3
 tar_max_open_shards: 32
 
 musan_path: /home/john.zheng1/voicegeneration/musan.tar
@@ -50,7 +54,7 @@ rirs_path: /home/john.zheng1/voicegeneration/RIRS_NOISES
 train_data: []
 
 
-valid_data: [{scp_path: '/scratch/49242339/voxceleb1/protocols/vox1-o/wav.scp', trial_path: '/scratch/49242339/voxceleb1/protocols/vox1-o/trials'}]
+valid_data: [{scp_path: '/scratch/49572343/voxceleb1/protocols/vox1-o/wav.scp', trial_path: '/scratch/49572343/voxceleb1/protocols/vox1-o/trials'}]
 
 
 peft_config: null

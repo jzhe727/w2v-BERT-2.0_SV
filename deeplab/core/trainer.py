@@ -263,7 +263,7 @@ class Trainer():
                 if self.hparams['use_amp']:
                     ckpt_data['amp_scaler'] = self.amp_scaler.state_dict()
                 ckpt_data['rng'] = self.get_rng_state()
-                torch.save(ckpt_data, ckpt_path)
+                self.save_checkpoint(ckpt_data, ckpt_path)
 
             if self.is_distributed: 
                 dist.barrier()
@@ -356,7 +356,7 @@ class Trainer():
                         else:
                             ckpt_data['modules'][k] = v.state_dict()
 
-                    torch.save(ckpt_data, ckpt_path)
+                    self.save_checkpoint(ckpt_data, ckpt_path)
 
                 if self.is_distributed: 
                     dist.barrier()
@@ -452,15 +452,19 @@ class Trainer():
             else:
                 curr_state_dict = module.state_dict()
                 ckpt_state_dict = ckpt_data['modules'][key]
-                mismatched = False
+                unmatched_keys = []
                 for k in curr_state_dict.keys():
                     if k in ckpt_state_dict and curr_state_dict[k].shape==ckpt_state_dict[k].shape:
                         curr_state_dict[k] = ckpt_state_dict[k] 
                     else:
-                        mismatched = True
+                        unmatched_keys.append(k)
+                if unmatched_keys and key in self.hparams.get('strict_pretrain_modules', []):
+                    raise RuntimeError('{}: {}/{} weights missing or mismatched in {} (e.g. {})'.format(
+                        key, len(unmatched_keys), len(curr_state_dict), ckpt_path, unmatched_keys[:5]))
                 module.load_state_dict(curr_state_dict)
-                if mismatched:
-                    self.print('      {}: <Partial weights matched>'.format(key)) 
+                if unmatched_keys:
+                    self.print('      {}: <Partial weights matched: {}/{} missing or mismatched>'.format(
+                        key, len(unmatched_keys), len(curr_state_dict)))
                 else:
                     self.print('      {}: <All weights matched>'.format(key)) 
 
@@ -483,6 +487,17 @@ class Trainer():
 
         if self.is_distributed:
             dist.barrier()
+
+    def save_checkpoint(self, ckpt_data, ckpt_path):
+        # Write to a temp name and rename, so a failed write (e.g. disk quota)
+        # never leaves a truncated file at ckpt_path.
+        tmp_path = ckpt_path + '.tmp'
+        try:
+            torch.save(ckpt_data, tmp_path)
+            os.replace(tmp_path, ckpt_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
 
     def resume_checkpoints(self, ckpt_path):
         self.load_checkpoints(ckpt_path, include_training_state=True)

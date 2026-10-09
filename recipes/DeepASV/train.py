@@ -31,7 +31,11 @@ class LocalTrainer(Trainer):
 
     def prep(self, hparams):
         if hparams.get('train_tar_index'):
-            self.train_dataset = TarTrainDataset(hparams)
+            # Compute fbank features in the DataLoader workers instead of the main process
+            feature_extractor = None
+            if hparams.get('features_in_loader', False):
+                feature_extractor = hparams['modules']['spk_model'].front.feature_extractor
+            self.train_dataset = TarTrainDataset(hparams, feature_extractor=feature_extractor)
         else:
             self.train_dataset = Train_Dataset(hparams)
         self.valid_dataset = Valid_Dataset(hparams)

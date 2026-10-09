@@ -1,4 +1,5 @@
 import io
+import math
 import os
 import sqlite3
 from collections import OrderedDict
@@ -23,6 +24,10 @@ except ImportError:
 # Extra samples decoded past the end of a seek window, in output samples:
 # covers AAC sync-frame backoff at the seek point and resampler priming.
 _WINDOW_MARGIN_SAMPLES = 4000
+
+# Extra input samples cropped before speed perturbation, so the sox output is
+# longer than the target plus its trimmed edges and never has to be tiled with itself.
+_SPEED_MARGIN_SAMPLES = 400
 
 
 def decode_m4a_bytes(data, sample_rate, window_samples=None):
@@ -137,8 +142,11 @@ def load_tar_index(index_path):
 
 
 class TarTrainDataset(torch.utils.data.Dataset):
-    def __init__(self, hparams):
+    def __init__(self, hparams, feature_extractor=None):
         super().__init__()
+        # With a feature extractor, __getitem__ returns fbank features instead
+        # of the waveform, so extraction runs in the DataLoader workers.
+        self.feature_extractor = feature_extractor
         self.repeat = hparams["training_loop"]
         self.sr = hparams["sample_rate"]
         self.speed_perturbation = hparams["speed_perturbation"]
@@ -203,13 +211,18 @@ class TarTrainDataset(torch.utils.data.Dataset):
         idx %= len(self.utt_list)
         variant, record_idx = divmod(idx, len(self.records))
         shard_id, offset, size, speaker_label = self.records[record_idx]
-        signal = self._read_audio(
-            int(shard_id), int(offset), int(size), int(dur * self.sr)
-        )
-        signal = truncate_audio_random(signal, int(dur * self.sr))
+        tlen = int(dur * self.sr)
+        if variant:
+            speed = self.speed_values[variant - 1]
+            # crop enough input that the sped-up/slowed output still covers tlen
+            crop_len = int(math.ceil(tlen * speed)) + _SPEED_MARGIN_SAMPLES
+        else:
+            crop_len = tlen
+        signal = self._read_audio(int(shard_id), int(offset), int(size), crop_len)
+        signal = truncate_audio_random(signal, crop_len)
 
         if variant:
-            signal = speed_augmentation(signal, self.sr, self.speed_values[variant - 1])
+            signal = speed_augmentation(signal, self.sr, speed, tlen=tlen)
             speaker_label += variant * self.spk_num
 
         if self.data_aug:
@@ -223,7 +236,19 @@ class TarTrainDataset(torch.utils.data.Dataset):
                     signal, self.sr, self.rirs_list, prob=1.0
                 )
 
+        if self.feature_extractor is not None:
+            aud_inputs = self.feature_extractor(
+                signal.astype(np.float32, copy=False),
+                sampling_rate=self.sr,
+                return_tensors="pt",
+                padding=False,
+                truncation=False,
+                return_attention_mask=False,
+            ).input_features[0]
+        else:
+            aud_inputs = torch.from_numpy(signal).float()
+
         return {
-            "aud_inputs": torch.from_numpy(signal).float(),
+            "aud_inputs": aud_inputs,
             "spk_labels": torch.tensor(speaker_label).long(),
         }

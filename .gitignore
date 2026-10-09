@@ -3,3 +3,6 @@
 *.log
 *.syncstate
 recipes/DeepASV/wandb/**
+recipes/DeepASV/chat.json
+*.bak*
+__pycache__/
